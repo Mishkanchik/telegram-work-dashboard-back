@@ -21,6 +21,14 @@ if (!$user_id) {
     exit;
 }
 
-$shifts = getUserShifts($user_id, null, null, $limit);
+// Викликаємо функцію. Назва змінної тепер логічна - $stats
+$stats = getUserShifts($user_id, null, null, $limit);
 
-echo json_encode($shifts);
+// Якщо функція повернула null або false (помилка БД) - повертаємо порожній масив замість помилки
+if ($stats === null || $stats === false) {
+    $stats = [];
+}
+
+// Повертаємо статистику (або зміни, якщо функція getUserShifts повертає їх)
+echo json_encode($stats);
+?>
