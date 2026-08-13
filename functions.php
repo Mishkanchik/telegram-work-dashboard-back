@@ -82,7 +82,7 @@ function initDB($db) {
 }
 
 // =============================================
-// ЛОГУВАННЯ (ТІЛЬКИ ОДНА ВЕРСІЯ!)
+// ЛОГУВАННЯ
 // =============================================
 
 function writeLog($message) {
@@ -170,16 +170,13 @@ function isAdmin($telegram_id) {
 function createUser($telegram_id, $username, $full_name, $referral_code = null) {
     $db = getDB();
 
-    // Перевіряємо, чи існує користувач
     $existing = getUserByTelegramId($telegram_id);
     if ($existing) {
         return $existing;
     }
 
-    // Генерація реферального коду
     $refCode = 'ref_' . $telegram_id . '_' . substr(md5(uniqid()), 0, 6);
 
-    // Пошук реферера
     $referred_by_id = null;
     if ($referral_code) {
         $stmt = $db->prepare("SELECT id FROM users WHERE referral_code = :code");
@@ -191,7 +188,6 @@ function createUser($telegram_id, $username, $full_name, $referral_code = null) 
         }
     }
 
-    // Визначення ролі
     $role = isAdmin($telegram_id) ? 'admin' : 'worker';
 
     $stmt = $db->prepare("INSERT INTO users (telegram_id, username, full_name, role, referral_code, referred_by_id)
@@ -208,7 +204,6 @@ function createUser($telegram_id, $username, $full_name, $referral_code = null) 
 
     $newUser = getUserByTelegramId($telegram_id);
     
-    // Повідомляємо реферера
     if ($referral_code && $referred_by_id) {
         notifyReferrer($referral_code, $full_name);
     }
@@ -627,7 +622,7 @@ function getReferralLink($user) {
 }
 
 // =============================================
-// КЛАВІАТУРИ
+// КЛАВІАТУРИ (ЗМІНЕНО!)
 // =============================================
 
 function getMainMenuKeyboard($user) {
@@ -644,6 +639,10 @@ function getMainMenuKeyboard($user) {
     $shift_button_text = $session ? "⏹ Закінчити зміну" : "▶️ Почати зміну";
     $shift_callback = $session ? "end_shift" : "start_shift";
 
+    // ✅ ЗМІНА: використовуємо url замість web_app
+    $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['telegram_id'];
+    $adminUrl = WEBAPP_URL . '/admin.html';
+
     $keyboard = [
         'inline_keyboard' => [
             [
@@ -654,7 +653,7 @@ function getMainMenuKeyboard($user) {
                 ['text' => $shift_button_text, 'callback_data' => $shift_callback],
             ],
             [
-                ['text' => '📊 Статистика', 'url' => WEBAPP_URL . '/stats.html?user_id=' . $user['telegram_id']],
+                ['text' => '📊 Статистика', 'url' => $statsUrl],
                 ['text' => '📋 Мої зміни', 'callback_data' => 'my_shifts'],
             ],
             [
@@ -663,9 +662,10 @@ function getMainMenuKeyboard($user) {
         ],
     ];
 
+    // ✅ ЗМІНА: для адмін-панелі також використовуємо url
     if ($user['role'] === 'admin' || isAdmin($user['telegram_id'])) {
         $keyboard['inline_keyboard'][] = [
-            ['text' => '🔐 Admin Panel', 'web_app' => ['url' => WEBAPP_URL . '/admin_panel.php']],
+            ['text' => '🔐 Admin Panel', 'url' => $adminUrl],
         ];
     }
 
@@ -828,32 +828,4 @@ function exportShiftsToCSV($user_id = null, $month = null) {
     if ($user_id) {
         $where .= " AND user_id = :uid";
         $params[':uid'] = $user_id;
-    }
-    
-    if ($month) {
-        $where .= " AND strftime('%Y-%m', date) = :month";
-        $params[':month'] = $month;
-    }
-    
-    $sql = "SELECT * FROM shifts WHERE $where ORDER BY date DESC, start_time DESC";
-    $stmt = $db->prepare($sql);
-    foreach ($params as $key => $val) {
-        $stmt->bindValue($key, $val);
-    }
-    $result = $stmt->execute();
-    
-    $data = [];
-    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-        $user = getUserById($row['user_id']);
-        $data[] = [
-            'user' => $user['full_name'] ?? 'Unknown',
-            'date' => $row['date'],
-            'shift_type' => $row['shift_type'] == 'morning' ? 'Ранкова' : 'Вечірня',
-            'start_time' => $row['start_time'],
-            'end_time' => $row['end_time'],
-            'total_hours' => $row['total_hours'],
-        ];
-    }
-    
-    return $data;
-}
+   
