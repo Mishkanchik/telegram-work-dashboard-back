@@ -828,4 +828,32 @@ function exportShiftsToCSV($user_id = null, $month = null) {
     if ($user_id) {
         $where .= " AND user_id = :uid";
         $params[':uid'] = $user_id;
-   
+    }
+    
+    if ($month) {
+        $where .= " AND strftime('%Y-%m', date) = :month";
+        $params[':month'] = $month;
+    }
+    
+    $sql = "SELECT * FROM shifts WHERE $where ORDER BY date DESC, start_time DESC";
+    $stmt = $db->prepare($sql);
+    foreach ($params as $key => $val) {
+        $stmt->bindValue($key, $val);
+    }
+    $result = $stmt->execute();
+    
+    $data = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $user = getUserById($row['user_id']);
+        $data[] = [
+            'user' => $user['full_name'] ?? 'Unknown',
+            'date' => $row['date'],
+            'shift_type' => $row['shift_type'] == 'morning' ? 'Ранкова' : 'Вечірня',
+            'start_time' => $row['start_time'],
+            'end_time' => $row['end_time'],
+            'total_hours' => $row['total_hours'],
+        ];
+    }
+    
+    return $data;
+}
