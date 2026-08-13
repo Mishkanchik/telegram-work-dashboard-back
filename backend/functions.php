@@ -1,47 +1,56 @@
 <?php
-// backend/functions.php - Функції БД та API
+require_once __DIR__ . '/config.php';
 
 // =============================================
-// ПІДКЛЮЧЕННЯ ДО БАЗИ ДАНИХ
+// DATABASE FUNCTIONS
 // =============================================
 
 function getDB() {
-    static $db = null;
-    if ($db === null) {
-        $dbPath = defined('DB_PATH') ? DB_PATH : __DIR__ . '/database/workbot.db';
-        $db = new PDO('sqlite:' . $dbPath);
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $db->exec('PRAGMA foreign_keys = ON');
-        initDatabase($db);
+    $dbPath = DB_PATH;
+    $dir = dirname($dbPath);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0755, true);
     }
+    
+    $db = new PDO("sqlite:$dbPath");
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     return $db;
 }
 
-function initDatabase($db) {
-    $db->exec('
+function initDB() {
+    $db = getDB();
+    
+    $db->exec("
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id INTEGER UNIQUE NOT NULL,
             username TEXT,
-            full_name TEXT NOT NULL,
-            role TEXT DEFAULT "worker",
+            full_name TEXT,
+            role TEXT DEFAULT 'worker',
             is_active INTEGER DEFAULT 1,
             registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             referral_code TEXT UNIQUE,
-            referred_by_id INTEGER
-        );
-        
+            referred_by_id INTEGER,
+            last_activity DATETIME
+        )
+    ");
+    
+    $db->exec("
         CREATE TABLE IF NOT EXISTS shifts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             shift_type TEXT NOT NULL,
             start_time DATETIME NOT NULL,
             end_time DATETIME,
-            total_hours REAL,
+            total_hours REAL DEFAULT 0,
             date DATE NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-        
+        )
+    ");
+    
+    $db->exec("
         CREATE TABLE IF NOT EXISTS work_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -51,171 +60,131 @@ function initDatabase($db) {
             is_active INTEGER DEFAULT 1,
             last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    ');
+        )
+    ");
+    
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS admin_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            target_user_id INTEGER,
+            details TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ");
+    
+    // Create referral codes for existing users
+    $stmt = $db->query("SELECT id FROM users WHERE referral_code IS NULL");
+    foreach ($stmt->fetchAll() as $row) {
+        $code = 'ref_' . $row['id'] . '_' . bin2hex(random_bytes(4));
+        $db->prepare("UPDATE users SET referral_code = ? WHERE id = ?")->execute([$code, $row['id']]);
+    }
 }
 
 // =============================================
-// КОРИСТУВАЧІ
+// USER FUNCTIONS
 // =============================================
-
-function getUserById($userId) {
-    $db = getDB();
-    $stmt = $db->prepare('SELECT * FROM users WHERE id = ?');
-    $stmt->execute([$userId]);
-    return $stmt->fetch(PDO::FETCH_ASSOC);
-}
 
 function getUserByTelegramId($telegramId) {
     $db = getDB();
-    $stmt = $db->prepare('SELECT * FROM users WHERE telegram_id = ?');
+    $stmt = $db->prepare("SELECT * FROM users WHERE telegram_id = ?");
     $stmt->execute([$telegramId]);
-    return $stmt->fetch(PDO::FETCH_ASSOC);
+    return $stmt->fetch();
 }
 
 function createUser($telegramId, $username, $fullName, $referredByCode = null) {
     $db = getDB();
-    $referralCode = 'ref_' . substr(md5($telegramId . time()), 0, 8);
     
+    $referralCode = 'ref_' . $telegramId . '_' . bin2hex(random_bytes(4));
     $referredById = null;
+    
     if ($referredByCode) {
-        $stmt = $db->prepare('SELECT id FROM users WHERE referral_code = ?');
+        $stmt = $db->prepare("SELECT id FROM users WHERE referral_code = ?");
         $stmt->execute([$referredByCode]);
-        $referrer = $stmt->fetch(PDO::FETCH_ASSOC);
+        $referrer = $stmt->fetch();
         if ($referrer) {
             $referredById = $referrer['id'];
         }
     }
     
-    $stmt = $db->prepare('
-        INSERT INTO users (telegram_id, username, full_name, referral_code, referred_by_id)
-        VALUES (?, ?, ?, ?, ?)
-    ');
+    $stmt = $db->prepare("
+        INSERT INTO users (telegram_id, username, full_name, referral_code, referred_by_id, last_activity)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ");
     $stmt->execute([$telegramId, $username, $fullName, $referralCode, $referredById]);
     
     return $db->lastInsertId();
 }
 
-function generateReferralCode($userId) {
-    $db = getDB();
-    $code = 'ref_' . substr(md5($userId . time()), 0, 8);
-    $stmt = $db->prepare('UPDATE users SET referral_code = ? WHERE id = ?');
-    $stmt->execute([$code, $userId]);
-    return $code;
-}
-
-// =============================================
-// СТАТИСТИКА
-// =============================================
-
-function getUserStats($userId, $month = null) {
+function getUserStats($userId) {
     $db = getDB();
     
-    $whereClause = 'user_id = ?';
-    $params = [$userId];
-    
-    if ($month) {
-        $whereClause .= ' AND strftime("%Y-%m", date) = ?';
-        $params[] = $month;
-    }
-    
-    $stmt = $db->prepare('
+    $stmt = $db->prepare("
         SELECT 
             COUNT(*) as total_shifts,
-            COALESCE(SUM(total_hours), 0) as total_hours,
-            COALESCE(AVG(total_hours), 0) as avg_hours,
-            SUM(CASE WHEN shift_type = "morning" THEN 1 ELSE 0 END) as morning_shifts,
-            SUM(CASE WHEN shift_type = "evening" THEN 1 ELSE 0 END) as evening_shifts
+            SUM(total_hours) as total_hours,
+            AVG(total_hours) as avg_hours,
+            SUM(CASE WHEN shift_type = 'morning' THEN 1 ELSE 0 END) as morning_shifts,
+            SUM(CASE WHEN shift_type = 'evening' THEN 1 ELSE 0 END) as evening_shifts
         FROM shifts 
-        WHERE ' . $whereClause
-    );
-    $stmt->execute($params);
-    return $stmt->fetch(PDO::FETCH_ASSOC);
-}
-
-function getUserDailyHours($userId, $days = 30, $month = null) {
-    $db = getDB();
+        WHERE user_id = ?
+    ");
+    $stmt->execute([$userId]);
+    $stats = $stmt->fetch();
     
-    $whereClause = 'user_id = ?';
-    $params = [$userId];
-    
-    if ($month) {
-        $whereClause .= ' AND strftime("%Y-%m", date) = ?';
-        $params[] = $month;
-    } else {
-        $whereClause .= ' AND date >= date("now", "-' . $days . ' days")';
-    }
-    
-    $stmt = $db->prepare('
-        SELECT date, SUM(total_hours) as hours
+    // This month
+    $stmt = $db->prepare("
+        SELECT 
+            COUNT(*) as month_shifts,
+            SUM(total_hours) as month_hours
         FROM shifts 
-        WHERE ' . $whereClause . '
-        GROUP BY date
-        ORDER BY date ASC
-    ');
-    $stmt->execute($params);
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        WHERE user_id = ? AND date >= date('now', 'start of month')
+    ");
+    $stmt->execute([$userId]);
+    $month = $stmt->fetch();
+    
+    return array_merge($stats, $month);
 }
 
-function getUserShifts($userId, $month = null, $limit = null, $offset = 0) {
+function getUserShifts($userId, $limit = 50, $offset = 0) {
     $db = getDB();
-    
-    $whereClause = 'user_id = ?';
-    $params = [$userId];
-    
-    if ($month) {
-        $whereClause .= ' AND strftime("%Y-%m", date) = ?';
-        $params[] = $month;
-    }
-    
-    $sql = 'SELECT * FROM shifts WHERE ' . $whereClause . ' ORDER BY date DESC';
-    
-    if ($limit) {
-        $sql .= ' LIMIT ' . (int)$limit . ' OFFSET ' . (int)$offset;
-    }
-    
-    $stmt = $db->prepare($sql);
-    $stmt->execute($params);
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt = $db->prepare("
+        SELECT * FROM shifts 
+        WHERE user_id = ? 
+        ORDER BY date DESC, start_time DESC 
+        LIMIT ? OFFSET ?
+    ");
+    $stmt->execute([$userId, $limit, $offset]);
+    return $stmt->fetchAll();
 }
 
-function getUserAchievements($userId) {
-    $stats = getUserStats($userId);
-    $totalShifts = (int)($stats['total_shifts'] ?? 0);
-    $totalHours = (float)($stats['total_hours'] ?? 0);
-    
-    $achievements = [
-        ['icon' => '🎯', 'title' => 'Перша зміна', 'desc' => 'Завершіть першу зміну', 'earned' => $totalShifts >= 1],
-        ['icon' => '⭐', 'title' => '10 змін', 'desc' => 'Завершіть 10 змін', 'earned' => $totalShifts >= 10],
-        ['icon' => '🌟', 'title' => '25 змін', 'desc' => 'Завершіть 25 змін', 'earned' => $totalShifts >= 25],
-        ['icon' => '🏆', 'title' => '50 змін', 'desc' => 'Завершіть 50 змін', 'earned' => $totalShifts >= 50],
-        ['icon' => '⏱', 'title' => '50 годин', 'desc' => 'Відпрацюйте 50 годин', 'earned' => $totalHours >= 50],
-        ['icon' => '⏰', 'title' => '100 годин', 'desc' => 'Відпрацюйте 100 годин', 'earned' => $totalHours >= 100],
-        ['icon' => '🔥', 'title' => '200 годин', 'desc' => 'Відпрацюйте 200 годин', 'earned' => $totalHours >= 200],
-        ['icon' => '💪', 'title' => '500 годин', 'desc' => 'Відпрацюйте 500 годин', 'earned' => $totalHours >= 500],
-    ];
-    
-    return $achievements;
+function getActiveSession($userId) {
+    $db = getDB();
+    $stmt = $db->prepare("SELECT * FROM work_sessions WHERE user_id = ? AND is_active = 1");
+    $stmt->execute([$userId]);
+    return $stmt->fetch();
 }
-
-// =============================================
-// ЗМІНИ ТА СЕСІЇ
-// =============================================
 
 function startShift($userId, $shiftType) {
     $db = getDB();
     
-    // Перевірка активної сесії
-    $stmt = $db->prepare('SELECT id FROM work_sessions WHERE user_id = ? AND is_active = 1');
-    $stmt->execute([$userId]);
-    if ($stmt->fetch()) {
-        return ['error' => 'Вже є активна зміна'];
+    // Check if already has active session
+    $active = getActiveSession($userId);
+    if ($active) {
+        return ['success' => false, 'error' => 'Already have active shift'];
     }
     
-    $stmt = $db->prepare('
-        INSERT INTO work_sessions (user_id, shift_type, start_timestamp)
-        VALUES (?, ?, datetime("now"))
-    ');
+    // Validate time (not after 23:00)
+    $hour = (int)date('H');
+    if ($hour >= 23) {
+        return ['success' => false, 'error' => 'Cannot start shift after 23:00'];
+    }
+    
+    $stmt = $db->prepare("
+        INSERT INTO work_sessions (user_id, shift_type, start_timestamp, is_active, last_updated)
+        VALUES (?, ?, datetime('now'), 1, datetime('now'))
+    ");
     $stmt->execute([$userId, $shiftType]);
     
     return ['success' => true, 'session_id' => $db->lastInsertId()];
@@ -224,180 +193,271 @@ function startShift($userId, $shiftType) {
 function endShift($userId) {
     $db = getDB();
     
-    $stmt = $db->prepare('SELECT * FROM work_sessions WHERE user_id = ? AND is_active = 1');
-    $stmt->execute([$userId]);
-    $session = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if (!$session) {
-        return ['error' => 'Немає активної зміни'];
+    $active = getActiveSession($userId);
+    if (!$active) {
+        return ['success' => false, 'error' => 'No active shift'];
     }
     
-    $endTime = date('Y-m-d H:i:s');
-    $startTime = new DateTime($session['start_timestamp']);
-    $end = new DateTime($endTime);
-    $totalHours = ($end->getTimestamp() - $startTime->getTimestamp()) / 3600;
+    $start = new DateTime($active['start_timestamp']);
+    $end = new DateTime();
+    $hours = $start->diff($end)->h + ($start->diff($end)->i / 60) + ($start->diff($end)->s / 3600);
     
-    // Оновлюємо сесію
-    $stmt = $db->prepare('UPDATE work_sessions SET end_timestamp = ?, is_active = 0 WHERE id = ?');
-    $stmt->execute([$endTime, $session['id']]);
+    // Update session
+    $stmt = $db->prepare("
+        UPDATE work_sessions 
+        SET end_timestamp = datetime('now'), is_active = 0, last_updated = datetime('now')
+        WHERE id = ?
+    ");
+    $stmt->execute([$active['id']]);
     
-    // Створюємо запис про зміну
-    $stmt = $db->prepare('
+    // Create shift record
+    $stmt = $db->prepare("
         INSERT INTO shifts (user_id, shift_type, start_time, end_time, total_hours, date)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ');
-    $stmt->execute([
-        $userId,
-        $session['shift_type'],
-        $session['start_timestamp'],
-        $endTime,
-        $totalHours,
-        date('Y-m-d')
-    ]);
+        VALUES (?, ?, ?, datetime('now'), ?, date('now'))
+    ");
+    $stmt->execute([$userId, $active['shift_type'], $active['start_timestamp'], round($hours, 2)]);
     
-    return ['success' => true, 'total_hours' => round($totalHours, 2)];
+    return ['success' => true, 'hours' => round($hours, 2)];
 }
 
-function getActiveSession($userId) {
+function autoEndShifts() {
     $db = getDB();
-    $stmt = $db->prepare('SELECT * FROM work_sessions WHERE user_id = ? AND is_active = 1');
-    $stmt->execute([$userId]);
-    return $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt = $db->query("SELECT * FROM work_sessions WHERE is_active = 1");
+    $sessions = $stmt->fetchAll();
+    
+    foreach ($sessions as $session) {
+        $start = new DateTime($session['start_timestamp']);
+        $end = new DateTime();
+        $hours = $start->diff($end)->h + ($start->diff($end)->i / 60);
+        
+        $db->prepare("UPDATE work_sessions SET end_timestamp = datetime('now'), is_active = 0 WHERE id = ?")
+           ->execute([$session['id']]);
+        
+        $db->prepare("INSERT INTO shifts (user_id, shift_type, start_time, end_time, total_hours, date) VALUES (?, ?, ?, datetime('now'), ?, date('now'))")
+           ->execute([$session['user_id'], $session['shift_type'], $session['start_timestamp'], round($hours, 2)]);
+    }
+    
+    return count($sessions);
 }
 
-function getAllActiveSessions() {
+// =============================================
+// ADMIN FUNCTIONS
+// =============================================
+
+function verifyAdminPassword($password) {
+    return $password === ADMIN_PASSWORD;
+}
+
+function getAllWorkersStats() {
     $db = getDB();
-    $stmt = $db->query('
-        SELECT ws.*, u.full_name, u.username 
-        FROM work_sessions ws 
-        JOIN users u ON ws.user_id = u.id 
+    $stmt = $db->query("
+        SELECT 
+            u.id,
+            u.telegram_id,
+            u.username,
+            u.full_name,
+            u.registered_at,
+            u.last_activity,
+            COUNT(s.id) as total_shifts,
+            SUM(s.total_hours) as total_hours,
+            AVG(s.total_hours) as avg_hours,
+            SUM(CASE WHEN s.shift_type = 'morning' THEN 1 ELSE 0 END) as morning_shifts,
+            SUM(CASE WHEN s.shift_type = 'evening' THEN 1 ELSE 0 END) as evening_shifts
+        FROM users u
+        LEFT JOIN shifts s ON u.id = s.user_id
+        WHERE u.role = 'worker'
+        GROUP BY u.id
+        ORDER BY total_hours DESC
+    ");
+    return $stmt->fetchAll();
+}
+
+function getActiveShiftsNow() {
+    $db = getDB();
+    $stmt = $db->query("
+        SELECT 
+            ws.*,
+            u.username,
+            u.full_name,
+            u.telegram_id
+        FROM work_sessions ws
+        JOIN users u ON ws.user_id = u.id
         WHERE ws.is_active = 1
-    ');
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    ");
+    return $stmt->fetchAll();
 }
 
-// =============================================
-// АДМІН ФУНКЦІЇ
-// =============================================
-
-function getAdminStats($month = null) {
+function getTotalStats() {
     $db = getDB();
     
-    $whereClause = '1=1';
-    $params = [];
+    $stmt = $db->query("SELECT COUNT(*) as count FROM users WHERE role = 'worker'");
+    $totalWorkers = $stmt->fetch()['count'];
     
-    if ($month) {
-        $whereClause = 'strftime("%Y-%m", date) = ?';
-        $params = [$month];
-    }
+    $stmt = $db->query("SELECT COUNT(*) as count FROM work_sessions WHERE is_active = 1");
+    $activeToday = $stmt->fetch()['count'];
     
-    // Загальна статистика
-    $stmt = $db->prepare('
-        SELECT 
-            COUNT(DISTINCT user_id) as active_workers,
-            COUNT(*) as total_shifts,
-            COALESCE(SUM(total_hours), 0) as total_hours,
-            COALESCE(AVG(total_hours), 0) as avg_hours
-        FROM shifts 
-        WHERE ' . $whereClause
-    );
-    $stmt->execute($params);
-    $globalStats = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt = $db->query("SELECT SUM(total_hours) as total FROM shifts");
+    $totalHours = $stmt->fetch()['total'] ?? 0;
     
-    // Топ працівників
-    $stmt = $db->prepare('
-        SELECT 
-            u.id, u.full_name, u.username, u.role,
-            COUNT(s.id) as total_shifts,
-            SUM(CASE WHEN s.shift_type = "morning" THEN 1 ELSE 0 END) as morning_shifts,
-            SUM(CASE WHEN s.shift_type = "evening" THEN 1 ELSE 0 END) as evening_shifts,
-            COALESCE(SUM(s.total_hours), 0) as total_hours,
-            COALESCE(AVG(s.total_hours), 0) as avg_hours
-        FROM users u
-        LEFT JOIN shifts s ON u.id = s.user_id AND ' . $whereClause . '
-        GROUP BY u.id
-        ORDER BY total_hours DESC
-        LIMIT 10
-    ');
-    $stmt->execute($params);
-    $topWorkers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    // Всі працівники
-    $stmt = $db->prepare('
-        SELECT 
-            u.id, u.full_name, u.username, u.role,
-            COUNT(s.id) as total_shifts,
-            SUM(CASE WHEN s.shift_type = "morning" THEN 1 ELSE 0 END) as morning_shifts,
-            SUM(CASE WHEN s.shift_type = "evening" THEN 1 ELSE 0 END) as evening_shifts,
-            COALESCE(SUM(s.total_hours), 0) as total_hours,
-            COALESCE(AVG(s.total_hours), 0) as avg_hours
-        FROM users u
-        LEFT JOIN shifts s ON u.id = s.user_id AND ' . $whereClause . '
-        GROUP BY u.id
-        ORDER BY total_hours DESC
-    ');
-    $stmt->execute($params);
-    $allWorkers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    // Активні сесії
-    $activeSessions = getAllActiveSessions();
-    
-    // Активність по годинах
-    $hourlyActivity = array_fill(0, 24, 0);
-    $stmt = $db->query('
-        SELECT CAST(strftime("%H", start_time) AS INTEGER) as hour, COUNT(*) as count
-        FROM shifts
-        GROUP BY hour
-    ');
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $hourlyActivity[$row['hour']] = (int)$row['count'];
-    }
+    $stmt = $db->query("
+        SELECT u.full_name, SUM(s.total_hours) as hours
+        FROM shifts s
+        JOIN users u ON s.user_id = u.id
+        GROUP BY s.user_id
+        ORDER BY hours DESC
+        LIMIT 1
+    ");
+    $topWorker = $stmt->fetch();
     
     return [
-        'globalStats' => $globalStats,
-        'topWorkers' => $topWorkers,
-        'allWorkers' => $allWorkers,
-        'activeSessions' => $activeSessions,
-        'hourlyActivity' => $hourlyActivity
+        'total_workers' => $totalWorkers,
+        'active_today' => $activeToday,
+        'total_hours' => round($totalHours, 1),
+        'top_worker' => $topWorker
     ];
 }
 
-function exportToCSV($month = null) {
+function getHourlyActivity() {
+    $db = getDB();
+    $stmt = $db->query("
+        SELECT 
+            CAST(strftime('%H', start_time) AS INTEGER) as hour,
+            COUNT(*) as count
+        FROM shifts
+        WHERE date >= date('now', '-7 days')
+        GROUP BY hour
+        ORDER BY hour
+    ");
+    $data = $stmt->fetchAll();
+    
+    $result = [];
+    for ($i = 0; $i <= 23; $i++) {
+        $result[$i] = 0;
+    }
+    foreach ($data as $row) {
+        $result[$row['hour']] = $row['count'];
+    }
+    return $result;
+}
+
+function getShiftComparison() {
+    $db = getDB();
+    $stmt = $db->query("
+        SELECT 
+            date,
+            SUM(CASE WHEN shift_type = 'morning' THEN total_hours ELSE 0 END) as morning_hours,
+            SUM(CASE WHEN shift_type = 'evening' THEN total_hours ELSE 0 END) as evening_hours
+        FROM shifts
+        WHERE date >= date('now', '-30 days')
+        GROUP BY date
+        ORDER BY date
+    ");
+    return $stmt->fetchAll();
+}
+
+function logAdminAction($adminId, $action, $targetUserId = null, $details = null) {
+    $db = getDB();
+    $stmt = $db->prepare("
+        INSERT INTO admin_logs (admin_id, action, target_user_id, details)
+        VALUES (?, ?, ?, ?)
+    ");
+    $stmt->execute([$adminId, $action, $targetUserId, $details]);
+}
+
+function exportShiftsCSV($userId = null, $startDate = null, $endDate = null) {
     $db = getDB();
     
-    $whereClause = '1=1';
-    $params = [];
-    
-    if ($month) {
-        $whereClause = 'strftime("%Y-%m", s.date) = ?';
-        $params = [$month];
-    }
-    
-    $stmt = $db->prepare('
+    $sql = "
         SELECT 
-            u.full_name, u.username, s.date, s.shift_type, 
-            s.start_time, s.end_time, s.total_hours
+            u.full_name,
+            u.username,
+            s.date,
+            s.shift_type,
+            s.start_time,
+            s.end_time,
+            s.total_hours
         FROM shifts s
         JOIN users u ON s.user_id = u.id
-        WHERE ' . $whereClause . '
-        ORDER BY s.date DESC
-    ');
-    $stmt->execute($params);
+        WHERE 1=1
+    ";
+    $params = [];
     
-    $output = "Ім'я,Username,Дата,Зміна,Початок,Кінець,Години\n";
-    
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $output .= sprintf(
-            '"%s","%s","%s","%s","%s","%s","%s"' . "\n",
-            $row['full_name'],
-            $row['username'] ?: '-',
-            $row['date'],
-            $row['shift_type'] === 'morning' ? 'Ранкова' : 'Вечірня',
-            $row['start_time'],
-            $row['end_time'] ?: '-',
-            round($row['total_hours'], 2)
-        );
+    if ($userId) {
+        $sql .= " AND s.user_id = ?";
+        $params[] = $userId;
+    }
+    if ($startDate) {
+        $sql .= " AND s.date >= ?";
+        $params[] = $startDate;
+    }
+    if ($endDate) {
+        $sql .= " AND s.date <= ?";
+        $params[] = $endDate;
     }
     
-    return $output;
+    $sql .= " ORDER BY s.date DESC, s.start_time DESC";
+    
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchAll();
+}
+
+// =============================================
+// ACHIEVEMENTS
+// =============================================
+
+function getAchievements($userId) {
+    $stats = getUserStats($userId);
+    $totalShifts = $stats['total_shifts'] ?? 0;
+    $totalHours = $stats['total_hours'] ?? 0;
+    
+    $achievements = [
+        ['id' => 'first_shift', 'name' => 'Перша зміна', 'icon' => '🎯', 'unlocked' => $totalShifts >= 1, 'progress' => min(100, $totalShifts * 100)],
+        ['id' => 'ten_shifts', 'name' => '10 змін', 'icon' => '⭐', 'unlocked' => $totalShifts >= 10, 'progress' => min(100, $totalShifts * 10)],
+        ['id' => 'fifty_shifts', 'name' => '50 змін', 'icon' => '🏆', 'unlocked' => $totalShifts >= 50, 'progress' => min(100, $totalShifts * 2)],
+        ['id' => 'ten_hours', 'name' => '10 годин', 'icon' => '⏱', 'unlocked' => $totalHours >= 10, 'progress' => min(100, $totalHours * 10)],
+        ['id' => 'fifty_hours', 'name' => '50 годин', 'icon' => '💪', 'unlocked' => $totalHours >= 50, 'progress' => min(100, $totalHours * 2)],
+        ['id' => 'hundred_hours', 'name' => '100 годин', 'icon' => '🔥', 'unlocked' => $totalHours >= 100, 'progress' => min(100, $totalHours)],
+    ];
+    
+    return $achievements;
+}
+
+// =============================================
+// HELPERS
+// =============================================
+
+function jsonResponse($data, $status = 200) {
+    http_response_code($status);
+    header('Content-Type: application/json');
+    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+function requireAuth() {
+    $headers = getallheaders();
+    $auth = $headers['Authorization'] ?? '';
+    
+    if (!preg_match('/^Bearer\s+(.+)$/', $auth, $matches)) {
+        jsonResponse(['error' => 'Unauthorized'], 401);
+    }
+    
+    $token = $matches[1];
+    // Simple token validation - in production use JWT
+    if ($token !== ADMIN_PASSWORD) {
+        jsonResponse(['error' => 'Invalid token'], 401);
+    }
+    
+    return true;
+}
+
+function corsHeaders() {
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type, Authorization');
+    
+    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+        http_response_code(200);
+        exit;
+    }
 }

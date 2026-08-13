@@ -1,235 +1,245 @@
 <?php
-// backend/webhook.php - Telegram Webhook Handler
-
-require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/functions.php';
 
-// Логування
-function logWebhook($message) {
-    $logFile = __DIR__ . '/logs/webhook.log';
-    $timestamp = date('Y-m-d H:i:s');
-    file_put_contents($logFile, "[$timestamp] $message\n", FILE_APPEND);
+initDB();
+
+// Get raw POST data
+$input = json_decode(file_get_contents('php://input'), true);
+
+if (!$input) {
+    http_response_code(200);
+    exit;
 }
 
-// Відправка повідомлення в Telegram
-function sendMessage($chatId, $text, $keyboard = null) {
-    $url = "https://api.telegram.org/bot" . BOT_TOKEN . "/sendMessage";
+// Handle callback queries (button presses)
+if (isset($input['callback_query'])) {
+    handleCallbackQuery($input['callback_query']);
+    http_response_code(200);
+    exit;
+}
+
+// Handle messages
+if (isset($input['message'])) {
+    handleMessage($input['message']);
+    http_response_code(200);
+    exit;
+}
+
+http_response_code(200);
+exit;
+
+function handleMessage($message) {
+    $chatId = $message['chat']['id'];
+    $telegramId = $message['from']['id'];
+    $username = $message['from']['username'] ?? '';
+    $fullName = trim(($message['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? ''));
+    $text = $message['text'] ?? '';
     
+    // Check for deep linking (referral)
+    $referredByCode = null;
+    if (preg_match('/^\/start\s+(.+)$/', $text, $matches)) {
+        $payload = $matches[1];
+        if (strpos($payload, 'ref_') === 0) {
+            $referredByCode = $payload;
+        }
+    }
+    
+    $user = getUserByTelegramId($telegramId);
+    
+    if (!$user) {
+        // Create new user
+        $userId = createUser($telegramId, $username, $fullName, $referredByCode);
+        $user = getUserByTelegramId($telegramId);
+        
+        sendMessage($chatId, "✅ Вітаю! Ви зареєстровані в WorkTracker.\n\nВаш реферальний код: <code>{$user['referral_code']}</code>\nПосилання для запрошення: https://t.me/" . BOT_USERNAME . "?start={$user['referral_code']}", getMainKeyboard());
+    } else {
+        // Update last activity
+        $db = getDB();
+        $db->prepare("UPDATE users SET last_activity = datetime('now'), username = ? WHERE telegram_id = ?")
+           ->execute([$username, $telegramId]);
+        
+        sendMessage($chatId, "👋 З поверненням, {$user['full_name']}!", getMainKeyboard());
+    }
+}
+
+function handleCallbackQuery($callback) {
+    $chatId = $callback['message']['chat']['id'];
+    $telegramId = $callback['from']['id'];
+    $data = $callback['data'];
+    $callbackQueryId = $callback['id'];
+    $messageId = $callback['message']['message_id'];
+    
+    $user = getUserByTelegramId($telegramId);
+    if (!$user) {
+        answerCallbackQuery($callbackQueryId, '❌ Користувача не знайдено');
+        return;
+    }
+    
+    switch ($data) {
+        case 'shift_morning':
+        case 'shift_evening':
+            $shiftType = $data === 'shift_morning' ? 'morning' : 'evening';
+            $label = $shiftType === 'morning' ? '🌅 Ранкова (7-15)' : '🌇 Вечірня (15-23)';
+            
+            // Save selected shift in user data (could use a simple file or DB)
+            saveUserSelectedShift($user['id'], $shiftType);
+            
+            editMessageText($chatId, $messageId, "✅ Вибрано: <b>$label</b>\n\nНатисніть \"▶️ Почати зміну\" для старту.", getMainKeyboard($shiftType));
+            answerCallbackQuery($callbackQueryId, "Вибрано: $label");
+            break;
+            
+        case 'start_shift':
+            $selectedShift = getUserSelectedShift($user['id']);
+            if (!$selectedShift) {
+                answerCallbackQuery($callbackQueryId, '❌ Спочатку оберіть тип зміни');
+                break;
+            }
+            
+            $result = startShift($user['id'], $selectedShift);
+            if ($result['success']) {
+                $label = $selectedShift === 'morning' ? '🌅 Ранкова' : '🌇 Вечірня';
+                editMessageText($chatId, $messageId, "▶️ <b>Зміну розпочато!</b>\n\nТип: $label\nЧас: " . date('H:i') . "\n\nНатисніть ⏹ для завершення.", getMainKeyboard($selectedShift, true));
+                answerCallbackQuery($callbackQueryId, '✅ Зміну розпочато!');
+            } else {
+                answerCallbackQuery($callbackQueryId, '❌ ' . $result['error'], true);
+            }
+            break;
+            
+        case 'end_shift':
+            $active = getActiveSession($user['id']);
+            if (!$active) {
+                answerCallbackQuery($callbackQueryId, '❌ Немає активно зміни', true);
+                break;
+            }
+            
+            $result = endShift($user['id']);
+            if ($result['success']) {
+                editMessageText($chatId, $messageId, "⏹ <b>Зміну завершено!</b>\n\nВідпрацьовано: <b>{$result['hours']} год</b>\n\nДякуємо за роботу!", getMainKeyboard());
+                answerCallbackQuery($callbackQueryId, "✅ Завершено! {$result['hours']} год");
+            } else {
+                answerCallbackQuery($callbackQueryId, '❌ ' . $result['error'], true);
+            }
+            break;
+            
+        case 'my_shifts':
+            $shifts = getUserShifts($user['id'], 10);
+            $text = "📋 <b>Ваші останні зміни:</b>\n\n";
+            foreach ($shifts as $shift) {
+                $label = $shift['shift_type'] === 'morning' ? '🌅' : '🌇';
+                $text .= "$label {$shift['date']} | {$shift['start_time']} - " . ($shift['end_time'] ? date('H:i', strtotime($shift['end_time'])) : '—') . " | <b>{$shift['total_hours']} год</b>\n";
+            }
+            if (empty($shifts)) {
+                $text .= "Змін ще немає.";
+            }
+            editMessageText($chatId, $messageId, $text, getBackKeyboard());
+            answerCallbackQuery($callbackQueryId);
+            break;
+            
+        case 'referral_link':
+            $link = "https://t.me/" . BOT_USERNAME . "?start={$user['referral_code']}";
+            editMessageText($chatId, $messageId, "📤 <b>Ваше реферальне посилання:</b>\n\n<code>$link</code>\n\nПоділіться з друзями! За кожного запрошеного отримуєте бонус.", getBackKeyboard());
+            answerCallbackQuery($callbackQueryId);
+            break;
+            
+        case 'stats_webapp':
+            $url = WEBAPP_URL . "/stats.html?telegram_id={$user['telegram_id']}";
+            answerCallbackQuery($callbackQueryId, 'Відкриваю статистику...', false, ['url' => $url]);
+            break;
+            
+        case 'admin_panel':
+            if (in_array($telegramId, explode(',', ADMIN_IDS))) {
+                $url = WEBAPP_URL . "/admin.html";
+                answerCallbackQuery($callbackQueryId, 'Відкриваю адмін-панель...', false, ['url' => $url]);
+            } else {
+                answerCallbackQuery($callbackQueryId, '❌ Немає доступу', true);
+            }
+            break;
+            
+        case 'back_to_main':
+            editMessageText($chatId, $messageId, "🏠 <b>Головне меню</b>\n\nОберіть дію:", getMainKeyboard(getUserSelectedShift($user['id'])));
+            answerCallbackQuery($callbackQueryId);
+            break;
+    }
+}
+
+function getMainKeyboard($selectedShift = null, $active = false) {
+    $morningLabel = $selectedShift === 'morning' ? '✅ 🌅 Ранкова (7-15)' : '🌅 Ранкова (7-15)';
+    $eveningLabel = $selectedShift === 'evening' ? '✅ 🌇 Вечірня (15-23)' : '🌇 Вечірня (15-23)';
+    
+    $inlineKeyboard = [
+        [['text' => $morningLabel, 'callback_data' => 'shift_morning']],
+        [['text' => $eveningLabel, 'callback_data' => 'shift_evening']]
+    ];
+    
+    if ($active) {
+        $inlineKeyboard[] = [['text' => '⏹ Закінчити зміну', 'callback_data' => 'end_shift']];
+    } else {
+        $inlineKeyboard[] = [['text' => '▶️ Почати зміну', 'callback_data' => 'start_shift']];
+    }
+    
+    $inlineKeyboard[] = [['text' => '📊 Статистика', 'callback_data' => 'stats_webapp']];
+    $inlineKeyboard[] = [['text' => '📋 Мої зміни', 'callback_data' => 'my_shifts']];
+    $inlineKeyboard[] = [['text' => '📤 Реферальне посилання', 'callback_data' => 'referral_link']];
+    
+    if (in_array($GLOBALS['telegramId'] ?? 0, explode(',', ADMIN_IDS))) {
+        $inlineKeyboard[] = [['text' => '🔐 Admin Panel', 'callback_data' => 'admin_panel']];
+    }
+    
+    return ['inline_keyboard' => $inlineKeyboard];
+}
+
+function getBackKeyboard() {
+    return ['inline_keyboard' => [
+        [['text' => '🔙 Назад', 'callback_data' => 'back_to_main']]
+    ]];
+}
+
+function saveUserSelectedShift($userId, $shiftType) {
+    $file = __DIR__ . "/database/selected_shift_{$userId}.txt";
+    file_put_contents($file, $shiftType);
+}
+
+function getUserSelectedShift($userId) {
+    $file = __DIR__ . "/database/selected_shift_{$userId}.txt";
+    return file_exists($file) ? trim(file_get_contents($file)) : null;
+}
+
+function sendMessage($chatId, $text, $replyMarkup = null) {
+    $url = "https://api.telegram.org/bot" . BOT_TOKEN . "/sendMessage";
     $data = [
         'chat_id' => $chatId,
         'text' => $text,
         'parse_mode' => 'HTML'
     ];
-    
-    if ($keyboard) {
-        $data['reply_markup'] = json_encode($keyboard);
+    if ($replyMarkup) {
+        $data['reply_markup'] = json_encode($replyMarkup);
     }
-    
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    $result = curl_exec($ch);
-    curl_close($ch);
-    
-    return $result;
+    file_get_contents($url . '?' . http_build_query($data));
 }
 
-// Створення клавіатури
-function getMainKeyboard($isAdmin = false) {
-    $buttons = [
-        [
-            ['text' => '🔄 Зміна (7-15)', 'callback_data' => 'shift_morning'],
-            ['text' => '🔄 Зміна (15-23)', 'callback_data' => 'shift_evening']
-        ],
-        [
-            ['text' => '▶️ Почати зміну', 'callback_data' => 'start_shift']
-        ],
-        [
-            ['text' => '📊 Статистика', 'callback_data' => 'stats'],
-            ['text' => '📋 Мої зміни', 'callback_data' => 'my_shifts']
-        ],
-        [
-            ['text' => '📤 Реферальне посилання', 'callback_data' => 'referral']
-        ]
+function editMessageText($chatId, $messageId, $text, $replyMarkup = null) {
+    $url = "https://api.telegram.org/bot" . BOT_TOKEN . "/editMessageText";
+    $data = [
+        'chat_id' => $chatId,
+        'message_id' => $messageId,
+        'text' => $text,
+        'parse_mode' => 'HTML'
     ];
-    
-    if ($isAdmin) {
-        $buttons[] = [
-            ['text' => '🔐 Admin Panel', 'callback_data' => 'admin_panel']
-        ];
+    if ($replyMarkup) {
+        $data['reply_markup'] = json_encode($replyMarkup);
     }
-    
-    return ['inline_keyboard' => $buttons];
+    file_get_contents($url . '?' . http_build_query($data));
 }
 
-// Отримання тіла запиту
-$input = file_get_contents('php://input');
-$update = json_decode($input, true);
-
-if (!$update) {
-    logWebhook('Invalid update');
-    exit;
+function answerCallbackQuery($callbackQueryId, $text, $showAlert = false, $webApp = null) {
+    $url = "https://api.telegram.org/bot" . BOT_TOKEN . "/answerCallbackQuery";
+    $data = [
+        'callback_query_id' => $callbackQueryId,
+        'text' => $text,
+        'show_alert' => $showAlert
+    ];
+    if ($webApp) {
+        $data['url'] = $webApp['url'];
+    }
+    file_get_contents($url . '?' . http_build_query($data));
 }
-
-logWebhook('Received: ' . $input);
-
-// Обробка повідомлень
-if (isset($update['message'])) {
-    $message = $update['message'];
-    $chatId = $message['chat']['id'];
-    $userId = $message['from']['id'];
-    $username = $message['from']['username'] ?? '';
-    $fullName = trim(($message['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? ''));
-    
-    // Команда /start
-    if (isset($message['text']) && strpos($message['text'], '/start') === 0) {
-        $parts = explode(' ', $message['text']);
-        $referralCode = $parts[1] ?? null;
-        
-        // Перевіряємо чи існує користувач
-        $user = getUserByTelegramId($userId);
-        
-        if (!$user) {
-            // Створюємо нового користувача
-            $isAdmin = false;
-            $adminIds = explode(',', getenv('ADMIN_IDS') ?: '');
-            if (in_array($userId, $adminIds)) {
-                $isAdmin = true;
-            }
-            
-            $newUserId = createUser($userId, $username, $fullName, $referralCode);
-            $user = getUserById($newUserId);
-            
-            if ($isAdmin) {
-                $db = getDB();
-                $stmt = $db->prepare('UPDATE users SET role = "admin" WHERE id = ?');
-                $stmt->execute([$newUserId]);
-                $user['role'] = 'admin';
-            }
-            
-            sendMessage($chatId, "👋 Вітаю, <b>{$fullName}</b>!\n\nВи успішно зареєстровані в WorkTracker.\n\nОберіть дію:", getMainKeyboard($user['role'] === 'admin'));
-        } else {
-            sendMessage($chatId, "👋 Привіт, <b>{$fullName}</b>!\n\nОберіть дію:", getMainKeyboard($user['role'] === 'admin'));
-        }
-    }
-}
-
-// Обробка callback запитів
-if (isset($update['callback_query'])) {
-    $callback = $update['callback_query'];
-    $chatId = $callback['message']['chat']['id'];
-    $userId = $callback['from']['id'];
-    $data = $callback['data'];
-    
-    $user = getUserByTelegramId($userId);
-    
-    if (!$user) {
-        sendMessage($chatId, '❌ Спочатку натисніть /start');
-        exit;
-    }
-    
-    $response = '';
-    $keyboard = null;
-    
-    switch ($data) {
-        case 'shift_morning':
-            $response = '🌅 Обрано ранкову зміну (7-15). Натисніть "Почати зміну".';
-            break;
-            
-        case 'shift_evening':
-            $response = '🌇 Обрано вечірню зміну (15-23). Натисніть "Почати зміну".';
-            break;
-            
-        case 'start_shift':
-            $session = getActiveSession($user['id']);
-            if ($session) {
-                $startTime = new DateTime($session['start_timestamp']);
-                $now = new DateTime();
-                $elapsed = $now->getTimestamp() - $startTime->getTimestamp();
-                $hours = floor($elapsed / 3600);
-                $minutes = floor(($elapsed % 3600) / 60);
-                
-                $response = "⏱ Ви вже працюєте: {$hours} год {$minutes} хв\n\n";
-                $response .= "Натисніть щоб завершити:";
-                
-                $keyboard = [
-                    'inline_keyboard' => [
-                        [['text' => '⏹ Закінчити зміну', 'callback_data' => 'end_shift']]
-                    ]
-                ];
-            } else {
-                // Визначаємо тип зміни за часом
-                $hour = (int)date('H');
-                $shiftType = ($hour >= 7 && $hour < 15) ? 'morning' : 'evening';
-                
-                $result = startShift($user['id'], $shiftType);
-                
-                if (isset($result['success'])) {
-                    $response = "✅ Зміну почато!\n\nТип: " . ($shiftType === 'morning' ? '🌅 Ранкова' : '🌇 Вечірня') . "\n\n";
-                    $response .= "Не забудьте завершити зміну!";
-                } else {
-                    $response = '❌ ' . ($result['error'] ?? 'Помилка');
-                }
-            }
-            break;
-            
-        case 'end_shift':
-            $result = endShift($user['id']);
-            
-            if (isset($result['success'])) {
-                $response = "✅ Зміну завершено!\n\n⏱ Відпрацьовано: {$result['total_hours']} годин";
-            } else {
-                $response = '❌ ' . ($result['error'] ?? 'Помилка');
-            }
-            break;
-            
-        case 'stats':
-            $stats = getUserStats($user['id']);
-            $response = "📊 <b>Ваша статистика</b>\n\n";
-            $response .= "📋 Змін: {$stats['total_shifts']}\n";
-            $response .= "⏱ Годин: " . round($stats['total_hours'], 1) . "\n";
-            $response .= "📈 Середня зміна: " . round($stats['avg_hours'], 1) . " год\n";
-            $response .= "🌅 Ранкових: {$stats['morning_shifts']}\n";
-            $response .= "🌇 Вечірніх: {$stats['evening_shifts']}\n\n";
-            $response .= "<a href=\"" . WEBAPP_URL . "/stats.html?user_id={$user['id']}\">🔍 Детальна статистика</a>";
-            break;
-            
-        case 'my_shifts':
-            $shifts = getUserShifts($user['id'], null, 5);
-            $response = "📋 <b>Останні зміни:</b>\n\n";
-            
-            if (empty($shifts)) {
-                $response .= "Змін поки немає";
-            } else {
-                foreach ($shifts as $shift) {
-                    $type = $shift['shift_type'] === 'morning' ? '🌅' : '🌇';
-                    $hours = round($shift['total_hours'], 1);
-                    $response .= "{$type} {$shift['date']} - {$hours} год\n";
-                }
-            }
-            break;
-            
-        case 'referral':
-            $refCode = $user['referral_code'] ?: generateReferralCode($user['id']);
-            $refLink = "https://t.me/" . BOT_USERNAME . "?start={$refCode}";
-            $response = "📤 <b>Ваше реферальне посилання:</b>\n\n{$refLink}\n\n";
-            $response .= "Запрошуйте колег приєднатися!";
-            break;
-            
-        case 'admin_panel':
-            if ($user['role'] === 'admin') {
-                $response = "🔐 <b>Admin Panel</b>\n\n";
-                $response .= "<a href=\"" . WEBAPP_URL . "/admin.html\">Відкрити панель</a>";
-            } else {
-                $response = "❌ Доступ заборонено";
-            }
-            break;
-    }
-    
-    if ($response) {
-        sendMessage($chatId, $response, $keyboard);
-    }
-}
-
-echo 'OK';

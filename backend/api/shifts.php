@@ -1,20 +1,43 @@
 <?php
-// backend/api/shifts.php
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
+require_once __DIR__ . '/../../functions.php';
 
-require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/../functions.php';
+corsHeaders();
+initDB();
 
-$user_id = $_GET['user_id'] ?? 0;
-$limit = $_GET['limit'] ?? 30;
-$month = $_GET['month'] ?? null;
-
-if (!$user_id) {
-    echo json_encode(['error' => 'user_id required']);
-    exit;
+$telegramId = $_GET['telegram_id'] ?? null;
+if (!$telegramId) {
+    jsonResponse(['error' => 'telegram_id required'], 400);
 }
 
-$shifts = getUserShifts($user_id, $month, null, $limit);
+$user = getUserByTelegramId($telegramId);
+if (!$user) {
+    jsonResponse(['error' => 'User not found'], 404);
+}
 
-echo json_encode($shifts);
+$limit = (int)($_GET['limit'] ?? 50);
+$offset = (int)($_GET['offset'] ?? 0);
+
+$shifts = getUserShifts($user['id'], $limit, $offset);
+
+// Format for frontend
+$formatted = [];
+foreach ($shifts as $shift) {
+    $formatted[] = [
+        'id' => $shift['id'],
+        'date' => $shift['date'],
+        'shift_type' => $shift['shift_type'],
+        'shift_type_label' => $shift['shift_type'] === 'morning' ? '🌅 Ранкова' : '🌇 Вечірня',
+        'start_time' => date('H:i', strtotime($shift['start_time'])),
+        'end_time' => $shift['end_time'] ? date('H:i', strtotime($shift['end_time'])) : null,
+        'total_hours' => round($shift['total_hours'], 1)
+    ];
+}
+
+jsonResponse([
+    'shifts' => $formatted,
+    'pagination' => [
+        'limit' => $limit,
+        'offset' => $offset,
+        'has_more' => count($shifts) === $limit
+    ]
+]);

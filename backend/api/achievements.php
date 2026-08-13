@@ -1,18 +1,19 @@
 <?php
-// backend/api/achievements.php
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
+require_once __DIR__ . '/../../functions.php';
 
-require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/../functions.php';
+corsHeaders();
+initDB();
 
-$user_id = $_GET['user_id'] ?? 0;
-
-if (!$user_id) {
-    echo json_encode(['error' => 'user_id required']);
-    exit;
+$telegramId = $_GET['telegram_id'] ?? null;
+if (!$telegramId) {
+    jsonResponse(['error' => 'telegram_id required'], 400);
 }
 
-$achievements = getUserAchievements($user_id);
+$user = getUserByTelegramId($telegramId);
+if (!$user) {
+    jsonResponse(['error' => 'User not found'], 404);
+}
 
-echo json_encode($achievements);
+$achievements = getAchievements($user['id']);
+
+jsonResponse(['achievements' => $achievements]);
