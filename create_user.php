@@ -4,8 +4,8 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/functions.php';
 
 $telegram_id = 761584410; // Ваш Telegram ID
-$username = 'your_username'; // Ваш username в Telegram
-$full_name = 'Your Full Name'; // Ваше ім'я
+$username = 'mishkanchik'; // Ваш username в Telegram
+$full_name = ' Mishkanchik🫶🥹🫣🤭'; // Ваше ім'я
 
 echo "🔧 Створення користувача...\n\n";
 
