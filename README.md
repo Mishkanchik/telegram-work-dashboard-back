@@ -1,65 +1,72 @@
-# WorkTracker Backend API
+# WorkTracker Backend
 
-PHP + SQLite backend for Telegram Work Tracker Bot.
+PHP API для WorkTracker - облік робочих змін через Telegram бота.
 
-## Structure
+## Деплой на Render
+
+1. Створіть новий Web Service на Render
+2. Підключіть репозиторій
+3. Вкажіть Root Directory: `backend`
+4. Environment: PHP
+5. Build Command: `composer install` (якщо є composer.json)
+6. Start Command: `php -S 0.0.0.0:$PORT`
+
+### Змінні середовища на Render
 
 ```
-backend/
-├── config.php              # Configuration (env variables)
-├── functions.php           # Core functions (DB, users, shifts, admin)
-├── webhook.php             # Telegram webhook handler
-├── set_webhook.php         # Set webhook script
-├── api/
-│   ├── stats.php           # User statistics
-│   ├── user.php            # User profile + active session
-│   ├── shifts.php          # User shifts list
-│   ├── achievements.php    # User achievements
-│   └── admin/
-│       ├── auth.php        # Admin authentication
-│       ├── stats.php       # Admin dashboard stats
-│       └── export.php      # CSV export
-└── database/               # SQLite database (auto-created)
+BOT_TOKEN=your_telegram_bot_token
+BOT_USERNAME=YourBotUsername
+ADMIN_PASSWORD=secure_admin_password
+WEBAPP_URL=https://your-frontend.vercel.app
 ```
 
 ## API Endpoints
 
-### Public
-- `GET /api/stats.php?telegram_id=123` - User stats + achievements
-- `GET /api/user.php?telegram_id=123` - User profile + active session
-- `GET /api/shifts.php?telegram_id=123&limit=50&offset=0` - User shifts
-- `GET /api/achievements.php?telegram_id=123` - User achievements
+### User API
+- `GET /api/user.php?user_id={id}` - Отримати дані користувача
 
-### Admin (requires Authorization: Bearer ADMIN_PASSWORD)
-- `POST /api/admin/auth.php` - Login, returns token
-- `GET /api/admin/stats.php` - All workers stats, active shifts, charts data
-- `GET /api/admin/export.php?user_id=&start_date=&end_date=` - CSV export
+### Stats API
+- `GET /api/stats.php?user_id={id}&month={YYYY-MM}` - Статистика користувача
 
-## Deployment (Render)
+### Admin API
+- `POST /api/admin/auth.php` - Автентифікація адміна
+- `GET /api/admin/stats.php?month={YYYY-MM}` - Загальна статистика
+- `GET /api/admin/export.php?month={YYYY-MM}` - Експорт в CSV
 
-1. Create new Web Service
-2. Connect GitHub repo
-3. Build Command: (empty)
-4. Start Command: `php -S 0.0.0.0:$PORT`
-5. Add Environment Variables:
-   - `BOT_TOKEN`
-   - `BOT_USERNAME`
-   - `ADMIN_PASSWORD`
-   - `WEBAPP_URL`
-   - `WEBHOOK_URL`
-   - `ADMIN_IDS`
+### Webhook
+- `POST /webhook.php` - Обробник Telegram webhook
 
-## Set Webhook
+## Структура
 
-After deployment, run:
+```
+backend/
+├── config.php          # Конфігурація (змінні середовища)
+├── functions.php       # Функції БД та API
+├── webhook.php         # Telegram webhook обробник
+├── database/           # SQLite база даних
+└── logs/               # Логи
+```
+
+## Налаштування Webhook
+
+Після деплою на Render, встановіть webhook:
+
+```bash
+curl -X POST "https://api.telegram.org/bot{BOT_TOKEN}/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://your-backend.onrender.com/webhook.php"}'
+```
+
+Або відкрийте у браузері:
 ```
 https://your-backend.onrender.com/set_webhook.php
 ```
 
-## Database
+## База даних
 
-SQLite database auto-created at `database/workbot.db` with tables:
-- `users` - Telegram users
-- `shifts` - Completed shifts
-- `work_sessions` - Active sessions
-- `admin_logs` - Admin actions
+Використовується SQLite (файлова БД). Автоматично створюється при першому запуску.
+
+### Таблиці:
+- `users` - Користувачі
+- `shifts` - Робочі зміни
+- `work_sessions` - Активні сесії
