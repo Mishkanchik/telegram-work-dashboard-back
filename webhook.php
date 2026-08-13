@@ -42,19 +42,16 @@ function handleMessage($message) {
     $full_name = trim("$first_name $last_name");
     $text = $message['text'] ?? '';
 
-    // Команда /start з можливим реферальним кодом
     if (strpos($text, '/start') === 0) {
         $referral_code = null;
         $parts = explode(' ', $text);
         if (count($parts) > 1) {
             $referral_code = $parts[1];
         }
-
         handleStart($chat_id, $telegram_id, $username, $full_name, $referral_code);
         return;
     }
 
-    // Команда /stats
     if ($text === '/stats') {
         $user = getUserByTelegramId($telegram_id);
         if (!$user) {
@@ -65,7 +62,6 @@ function handleMessage($message) {
         return;
     }
 
-    // Команда /help
     if ($text === '/help') {
         $helpText = "📖 <b>Довідка по боту WorkTracker</b>\n\n";
         $helpText .= "🔹 /start - Головне меню\n";
@@ -81,7 +77,6 @@ function handleMessage($message) {
         return;
     }
 
-    // Команда /admin (швидкий доступ)
     if ($text === '/admin') {
         if (!isAdmin($telegram_id)) {
             sendMessage($chat_id, "❌ Доступ заборонено.");
@@ -90,12 +85,11 @@ function handleMessage($message) {
         $adminText = "🔐 <b>Admin Panel</b>\n\n";
         $adminText .= "Відкрийте адмін-панель через кнопку в головному меню,\n";
         $adminText .= "або перейдіть за посиланням:\n";
-        $adminText .= WEBAPP_URL . "/admin_panel.php";
+        $adminText .= WEBAPP_URL . "/admin.html";
         sendMessage($chat_id, $adminText);
         return;
     }
 
-    // Невідома команда — показуємо меню
     $user = getUserByTelegramId($telegram_id);
     if ($user) {
         showMainMenu($chat_id, $user);
@@ -112,7 +106,6 @@ function handleStart($chat_id, $telegram_id, $username, $full_name, $referral_co
     $user = getUserByTelegramId($telegram_id);
 
     if (!$user) {
-        // Новий користувач
         $user = createUser($telegram_id, $username, $full_name, $referral_code);
 
         $welcomeText = "🎉 <b>Ласкаво просимо до WorkTracker!</b>\n\n";
@@ -188,31 +181,24 @@ function handleCallbackQuery($callback) {
         case 'select_morning':
             handleSelectShift($callback_id, $chat_id, $message_id, $user, 'morning');
             break;
-
         case 'select_evening':
             handleSelectShift($callback_id, $chat_id, $message_id, $user, 'evening');
             break;
-
         case 'start_shift':
             handleStartShift($callback_id, $chat_id, $message_id, $user);
             break;
-
         case 'end_shift':
             handleEndShift($callback_id, $chat_id, $message_id, $user);
             break;
-
         case 'timer_refresh':
             handleTimerRefresh($callback_id, $chat_id, $message_id, $user);
             break;
-
         case 'my_shifts':
             handleMyShifts($callback_id, $chat_id, $message_id, $user);
             break;
-
         case 'referral_link':
             handleReferralLink($callback_id, $chat_id, $user);
             break;
-
         case 'main_menu':
             answerCallbackQuery($callback_id);
             $user = getUserByTelegramId($telegram_id);
@@ -234,11 +220,9 @@ function handleCallbackQuery($callback) {
             $keyboard = getMainMenuKeyboard($user);
             editMessageText($chat_id, $message_id, $menuText, $keyboard);
             break;
-
         case 'noop':
             answerCallbackQuery($callback_id);
             break;
-
         default:
             answerCallbackQuery($callback_id, "❓ Невідома дія");
             break;
@@ -308,6 +292,7 @@ function handleStartShift($callback_id, $chat_id, $message_id, $user) {
     editMessageText($chat_id, $message_id, $text, $keyboard);
 }
 
+// ✅ ВИПРАВЛЕНО: handleEndShift()
 function handleEndShift($callback_id, $chat_id, $message_id, $user) {
     $total_hours = endSession($user['id']);
 
@@ -322,10 +307,12 @@ function handleEndShift($callback_id, $chat_id, $message_id, $user) {
     $text .= "⏱ Відпрацьовано: <b>" . formatHours($total_hours) . "</b>\n\n";
     $text .= "Дякуємо за роботу! 💪";
 
+    $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['telegram_id'];
+
     $keyboard = [
         'inline_keyboard' => [
             [
-                ['text' => '📊 Моя статистика', 'web_app' => ['url' => WEBAPP_URL . '/stats.php?user_id=' . $user['telegram_id']]],
+                ['text' => '📊 Моя статистика', 'url' => $statsUrl],  // ← ВИПРАВЛЕНО!
             ],
             [
                 ['text' => '🏠 Головне меню', 'callback_data' => 'main_menu'],
@@ -368,6 +355,7 @@ function handleTimerRefresh($callback_id, $chat_id, $message_id, $user) {
     editMessageText($chat_id, $message_id, $text, $keyboard);
 }
 
+// ✅ ВИПРАВЛЕНО: handleMyShifts()
 function handleMyShifts($callback_id, $chat_id, $message_id, $user) {
     answerCallbackQuery($callback_id);
 
@@ -393,10 +381,12 @@ function handleMyShifts($callback_id, $chat_id, $message_id, $user) {
         }
     }
 
+    $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['telegram_id'];
+
     $keyboard = [
         'inline_keyboard' => [
             [
-                ['text' => '📊 Повна статистика', 'web_app' => ['url' => WEBAPP_URL . '/stats.php?user_id=' . $user['telegram_id']]],
+                ['text' => '📊 Повна статистика', 'url' => $statsUrl],  // ← ВИПРАВЛЕНО!
             ],
             [
                 ['text' => '🏠 Головне меню', 'callback_data' => 'main_menu'],
@@ -421,6 +411,7 @@ function handleReferralLink($callback_id, $chat_id, $user) {
     sendMessage($chat_id, $text);
 }
 
+// ✅ ВИПРАВЛЕНО: handleStatsCommand()
 function handleStatsCommand($chat_id, $user) {
     $stats = getUserStats($user['id']);
 
@@ -432,10 +423,12 @@ function handleStatsCommand($chat_id, $user) {
     $text .= "🌇 Вечірніх: <b>{$stats['evening_shifts']}</b>\n\n";
     $text .= "Для детальної статистики натисніть кнопку нижче:";
 
+    $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['telegram_id'];
+
     $keyboard = [
         'inline_keyboard' => [
             [
-                ['text' => '📊 Детальна статистика', 'web_app' => ['url' => WEBAPP_URL . '/stats.php?user_id=' . $user['telegram_id']]],
+                ['text' => '📊 Детальна статистика', 'url' => $statsUrl],  // ← ВИПРАВЛЕНО!
             ],
             [
                 ['text' => '🏠 Головне меню', 'callback_data' => 'main_menu'],
