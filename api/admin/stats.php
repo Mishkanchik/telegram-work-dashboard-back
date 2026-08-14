@@ -1,62 +1,84 @@
 <?php
-require_once __DIR__ . '/../../../functions.php';
+// api/admin/stats.php
+header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
-corsHeaders();
-initDB();
-requireAuth();
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
 
-$workers = getAllWorkersStats();
-$totalStats = getTotalStats();
-$activeShifts = getActiveShiftsNow();
-$hourlyActivity = getHourlyActivity();
-$shiftComparison = getShiftComparison();
+require_once __DIR__ . '/../../config.php';
+require_once __DIR__ . '/../../functions.php';
 
-// Format workers for frontend
-$formattedWorkers = [];
-foreach ($workers as $w) {
-    $formattedWorkers[] = [
-        'id' => $w['id'],
-        'telegram_id' => $w['telegram_id'],
-        'username' => $w['username'],
-        'full_name' => $w['full_name'],
-        'registered_at' => $w['registered_at'],
-        'last_activity' => $w['last_activity'],
-        'total_shifts' => (int)($w['total_shifts'] ?? 0),
-        'total_hours' => round($w['total_hours'] ?? 0, 1),
-        'avg_hours' => round($w['avg_hours'] ?? 0, 1),
-        'morning_shifts' => (int)($w['morning_shifts'] ?? 0),
-        'evening_shifts' => (int)($w['evening_shifts'] ?? 0),
-        'productivity' => $w['total_shifts'] > 0 ? round(($w['total_hours'] / $w['total_shifts']) * 10, 1) : 0
+// Отримуємо всіх користувачів
+$users = getAllUsers();
+$workers = [];
+
+foreach ($users as $user) {
+    $stats = getUserStats($user['id']);
+    $workers[] = [
+        'id' => $user['id'],
+        'telegram_id' => $user['telegram_id'],
+        'username' => $user['username'] ?? '',
+        'full_name' => $user['full_name'] ?? 'Користувач',
+        'registered_at' => $user['registered_at'] ?? '',
+        'total_shifts' => (int)($stats['total_shifts'] ?? 0),
+        'total_hours' => round($stats['total_hours'] ?? 0, 1),
+        'avg_hours' => round($stats['avg_hours'] ?? 0, 1),
+        'morning_shifts' => (int)($stats['morning_shifts'] ?? 0),
+        'evening_shifts' => (int)($stats['evening_shifts'] ?? 0),
     ];
 }
 
-// Format active shifts
-$formattedActive = [];
-foreach ($activeShifts as $s) {
-    $start = new DateTime($s['start_timestamp']);
+// Активні зміни
+$activeSessions = getAllActiveSessions();
+$activeShifts = [];
+foreach ($activeSessions as $session) {
+    $start = new DateTime($session['start_timestamp']);
     $now = new DateTime();
-    $hours = $start->diff($now)->h + ($start->diff($now)->i / 60);
-    $formattedActive[] = [
-        'user_id' => $s['user_id'],
-        'telegram_id' => $s['telegram_id'],
-        'username' => $s['username'],
-        'full_name' => $s['full_name'],
-        'shift_type' => $s['shift_type'],
-        'shift_type_label' => $s['shift_type'] === 'morning' ? '🌅 Ранкова' : '🌇 Вечірня',
-        'start_timestamp' => $s['start_timestamp'],
+    $diff = $start->diff($now);
+    $hours = $diff->h + ($diff->days * 24) + round($diff->i / 60, 1);
+    $activeShifts[] = [
+        'user_id' => $session['user_id'],
+        'telegram_id' => $session['telegram_id'],
+        'username' => $session['username'] ?? '',
+        'full_name' => $session['full_name'] ?? 'Користувач',
+        'shift_type' => $session['shift_type'],
+        'shift_type_label' => $session['shift_type'] === 'morning' ? '🌅 Ранкова' : '🌇 Вечірня',
+        'start_timestamp' => $session['start_timestamp'],
         'current_hours' => round($hours, 1)
     ];
 }
 
-jsonResponse([
+// Загальна статистика
+$totalWorkers = count($users);
+$totalShifts = 0;
+$totalHours = 0;
+$topWorker = null;
+$topHours = 0;
+
+foreach ($workers as $w) {
+    $totalShifts += $w['total_shifts'];
+    $totalHours += $w['total_hours'];
+    if ($w['total_hours'] > $topHours) {
+        $topHours = $w['total_hours'];
+        $topWorker = $w['full_name'];
+    }
+}
+
+echo json_encode([
     'summary' => [
-        'total_workers' => $totalStats['total_workers'],
-        'active_today' => $totalStats['active_today'],
-        'total_hours' => $totalStats['total_hours'],
-        'top_worker' => $totalStats['top_worker']
+        'total_workers' => $totalWorkers,
+        'active_today' => count($activeShifts),
+        'total_hours' => round($totalHours, 1),
+        'top_worker' => $topWorker ?: 'Немає даних',
+        'total_shifts' => $totalShifts,
     ],
-    'workers' => $formattedWorkers,
-    'active_shifts' => $formattedActive,
-    'hourly_activity' => $hourlyActivity,
-    'shift_comparison' => $shiftComparison
+    'workers' => $workers,
+    'active_shifts' => $activeShifts,
+    'hourly_activity' => array_fill(0, 24, 0),
+    'shift_comparison' => []
 ]);
