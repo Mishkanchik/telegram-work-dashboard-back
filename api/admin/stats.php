@@ -13,6 +13,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/../../config.php';
 require_once __DIR__ . '/../../functions.php';
 
+// Перевірка пароля
+$password = $_GET['password'] ?? '';
+if ($password !== ADMIN_PASSWORD) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Unauthorized']);
+    exit;
+}
+
 // Отримуємо всіх користувачів
 $users = getAllUsers();
 $workers = [];
@@ -24,6 +32,7 @@ foreach ($users as $user) {
         'telegram_id' => $user['telegram_id'],
         'username' => $user['username'] ?? '',
         'full_name' => $user['full_name'] ?? 'Користувач',
+        'role' => $user['role'] ?? 'worker',
         'registered_at' => $user['registered_at'] ?? '',
         'total_shifts' => (int)($stats['total_shifts'] ?? 0),
         'total_hours' => round($stats['total_hours'] ?? 0, 1),
@@ -47,7 +56,6 @@ foreach ($activeSessions as $session) {
         'username' => $session['username'] ?? '',
         'full_name' => $session['full_name'] ?? 'Користувач',
         'shift_type' => $session['shift_type'],
-        'shift_type_label' => $session['shift_type'] === 'morning' ? '🌅 Ранкова' : '🌇 Вечірня',
         'start_timestamp' => $session['start_timestamp'],
         'current_hours' => round($hours, 1)
     ];
@@ -69,16 +77,24 @@ foreach ($workers as $w) {
     }
 }
 
+// Топ-працівники
+$topWorkers = $workers;
+usort($topWorkers, function($a, $b) {
+    return $b['total_hours'] <=> $a['total_hours'];
+});
+$topWorkers = array_slice($topWorkers, 0, 5);
+
 echo json_encode([
     'summary' => [
         'total_workers' => $totalWorkers,
         'active_today' => count($activeShifts),
         'total_hours' => round($totalHours, 1),
+        'avg_hours' => $totalWorkers > 0 ? round($totalHours / $totalWorkers, 1) : 0,
         'top_worker' => $topWorker ?: 'Немає даних',
         'total_shifts' => $totalShifts,
+        'month_shifts' => getMonthShiftsCount(),
     ],
     'workers' => $workers,
     'active_shifts' => $activeShifts,
-    'hourly_activity' => array_fill(0, 24, 0),
-    'shift_comparison' => []
+    'top_workers' => $topWorkers,
 ]);
