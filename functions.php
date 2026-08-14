@@ -622,7 +622,7 @@ function getReferralLink($user) {
 }
 
 // =============================================
-// КЛАВІАТУРИ (ЗМІНЕНО!)
+// КЛАВІАТУРИ (ВИПРАВЛЕНО!)
 // =============================================
 
 function getMainMenuKeyboard($user) {
@@ -639,8 +639,8 @@ function getMainMenuKeyboard($user) {
     $shift_button_text = $session ? "⏹ Закінчити зміну" : "▶️ Почати зміну";
     $shift_callback = $session ? "end_shift" : "start_shift";
 
-    // ✅ ЗМІНА: використовуємо url замість web_app
-    $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['telegram_id'];
+    // ✅ ВИПРАВЛЕНО: використовуємо id з БД (НЕ telegram_id!)
+    $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['id'];
     $adminUrl = WEBAPP_URL . '/admin.html';
 
     $keyboard = [
@@ -662,7 +662,6 @@ function getMainMenuKeyboard($user) {
         ],
     ];
 
-    // ✅ ЗМІНА: для адмін-панелі також використовуємо url
     if ($user['role'] === 'admin' || isAdmin($user['telegram_id'])) {
         $keyboard['inline_keyboard'][] = [
             ['text' => '🔐 Admin Panel', 'url' => $adminUrl],
