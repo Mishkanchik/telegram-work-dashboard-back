@@ -20,8 +20,8 @@ define('WEBHOOK_URL', 'https://telegram-work-dashboard-back.onrender.com/webhook
 // ====================
 // ADMIN SETTINGS
 // ====================
-define('ADMIN_IDS', '123456789,987654321');           // Ваш Telegram ID
-define('ADMIN_PASSWORD', 'change_me_secure_password'); // Пароль для адмін-панелі
+define('ADMIN_IDS', '761584410');           // Ваш Telegram ID
+define('ADMIN_PASSWORD', '2000'); // Пароль для адмін-панелі
 
 // ====================
 // DATABASE SETTINGS
