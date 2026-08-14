@@ -95,7 +95,7 @@ function handleMessage($message) {
         return;
     }
 
-    // ✅ НЕВІДОМА КОМАНДА — ПЕРЕВІРЯЄМО АКТИВНУ СЕСІЮ
+    // Невідома команда — перевіряємо активну сесію
     $user = getUserByTelegramId($telegram_id);
     if ($user) {
         // Перевіряємо активну сесію
@@ -334,9 +334,20 @@ function handleStartShift($callback_id, $chat_id, $message_id, $user) {
 
 // ✅ ВИПРАВЛЕНО: handleEndShift()
 function handleEndShift($callback_id, $chat_id, $message_id, $user) {
+    // Перевіряємо, чи є користувач
+    if (!$user) {
+        answerCallbackQuery($callback_id, "❌ Користувача не знайдено. Натисніть /start", true);
+        return;
+    }
+
+    // Логуємо спробу завершення
+    writeLog("End shift attempt for user: " . $user['id'] . " (" . $user['full_name'] . ")");
+
     $total_hours = endSession($user['id']);
 
     if ($total_hours === false) {
+        // Логуємо помилку
+        writeLog("End shift failed: no active session for user " . $user['id']);
         answerCallbackQuery($callback_id, "⚠️ У вас немає активної зміни!", true);
         return;
     }
@@ -347,7 +358,6 @@ function handleEndShift($callback_id, $chat_id, $message_id, $user) {
     $text .= "⏱ Відпрацьовано: <b>" . formatHours($total_hours) . "</b>\n\n";
     $text .= "Дякуємо за роботу! 💪";
 
-    // ✅ ВИПРАВЛЕНО: використовуємо id з БД
     $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['id'];
 
     $keyboard = [
@@ -365,11 +375,16 @@ function handleEndShift($callback_id, $chat_id, $message_id, $user) {
 }
 
 function handleTimerRefresh($callback_id, $chat_id, $message_id, $user) {
+    // Перевіряємо, чи є користувач
+    if (!$user) {
+        answerCallbackQuery($callback_id, "❌ Користувача не знайдено. Натисніть /start", true);
+        return;
+    }
+
     $session = getActiveSession($user['id']);
 
     if (!$session) {
         answerCallbackQuery($callback_id, "ℹ️ Немає активної зміни");
-        $user = getUserByTelegramId($user['telegram_id']);
         $menuText = "🏠 <b>Головне меню</b>\n\n👤 <b>{$user['full_name']}</b>";
         $keyboard = getMainMenuKeyboard($user);
         editMessageText($chat_id, $message_id, $menuText, $keyboard);
@@ -398,6 +413,12 @@ function handleTimerRefresh($callback_id, $chat_id, $message_id, $user) {
 
 // ✅ ВИПРАВЛЕНО: handleMyShifts()
 function handleMyShifts($callback_id, $chat_id, $message_id, $user) {
+    // Перевіряємо, чи є користувач
+    if (!$user) {
+        answerCallbackQuery($callback_id, "❌ Користувача не знайдено. Натисніть /start", true);
+        return;
+    }
+
     answerCallbackQuery($callback_id);
 
     $shifts = getUserShifts($user['id'], null, null, 10);
@@ -422,7 +443,6 @@ function handleMyShifts($callback_id, $chat_id, $message_id, $user) {
         }
     }
 
-    // ✅ ВИПРАВЛЕНО: використовуємо id з БД
     $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['id'];
 
     $keyboard = [
@@ -440,6 +460,12 @@ function handleMyShifts($callback_id, $chat_id, $message_id, $user) {
 }
 
 function handleReferralLink($callback_id, $chat_id, $user) {
+    // Перевіряємо, чи є користувач
+    if (!$user) {
+        answerCallbackQuery($callback_id, "❌ Користувача не знайдено. Натисніть /start", true);
+        return;
+    }
+
     answerCallbackQuery($callback_id);
 
     $referral_url = getReferralLink($user);
@@ -455,6 +481,12 @@ function handleReferralLink($callback_id, $chat_id, $user) {
 
 // ✅ ВИПРАВЛЕНО: handleStatsCommand()
 function handleStatsCommand($chat_id, $user) {
+    // Перевіряємо, чи є користувач
+    if (!$user) {
+        sendMessage($chat_id, "❌ Користувача не знайдено. Натисніть /start");
+        return;
+    }
+
     $stats = getUserStats($user['id']);
 
     $text = "📊 <b>Ваша статистика</b>\n\n";
@@ -465,7 +497,6 @@ function handleStatsCommand($chat_id, $user) {
     $text .= "🌇 Вечірніх: <b>{$stats['evening_shifts']}</b>\n\n";
     $text .= "Для детальної статистики натисніть кнопку нижче:";
 
-    // ✅ ВИПРАВЛЕНО: використовуємо id з БД
     $statsUrl = WEBAPP_URL . '/stats.html?user_id=' . $user['id'];
 
     $keyboard = [
