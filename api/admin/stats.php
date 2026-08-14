@@ -1,5 +1,5 @@
 <?php
-// api/admin/stats.php
+
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
@@ -13,7 +13,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/../../config.php';
 require_once __DIR__ . '/../../functions.php';
 
-// Перевірка пароля
+// ✅ ПЕРЕВІРКА ПАРОЛЯ
 $password = $_GET['password'] ?? '';
 if ($password !== ADMIN_PASSWORD) {
     http_response_code(401);
@@ -65,16 +65,10 @@ foreach ($activeSessions as $session) {
 $totalWorkers = count($users);
 $totalShifts = 0;
 $totalHours = 0;
-$topWorker = null;
-$topHours = 0;
 
 foreach ($workers as $w) {
     $totalShifts += $w['total_shifts'];
     $totalHours += $w['total_hours'];
-    if ($w['total_hours'] > $topHours) {
-        $topHours = $w['total_hours'];
-        $topWorker = $w['full_name'];
-    }
 }
 
 // Топ-працівники
@@ -90,7 +84,6 @@ echo json_encode([
         'active_today' => count($activeShifts),
         'total_hours' => round($totalHours, 1),
         'avg_hours' => $totalWorkers > 0 ? round($totalHours / $totalWorkers, 1) : 0,
-        'top_worker' => $topWorker ?: 'Немає даних',
         'total_shifts' => $totalShifts,
         'month_shifts' => getMonthShiftsCount(),
     ],
