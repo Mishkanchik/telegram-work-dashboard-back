@@ -95,9 +95,33 @@ function handleMessage($message) {
         return;
     }
 
-    // Невідома команда — показуємо меню
+    // ✅ НЕВІДОМА КОМАНДА — ПЕРЕВІРЯЄМО АКТИВНУ СЕСІЮ
     $user = getUserByTelegramId($telegram_id);
     if ($user) {
+        // Перевіряємо активну сесію
+        $session = getActiveSession($user['id']);
+        if ($session) {
+            // Якщо є активна сесія — показуємо таймер
+            $start = new DateTime($session['start_timestamp']);
+            $now = new DateTime();
+            $diff = $start->diff($now);
+            $hours = $diff->h + ($diff->days * 24);
+            $minutes = $diff->i;
+            
+            $shiftLabel = $session['shift_type'] === 'morning' ? '🌅 Ранкова (7-15)' : '🌇 Вечірня (15-23)';
+            
+            $text = "⏱ <b>Зміна в процесі</b>\n\n";
+            $text .= "📋 Тип: {$shiftLabel}\n";
+            $text .= "🕐 Початок: " . formatTime($session['start_timestamp']) . "\n";
+            $text .= "⏱ Працюєте: <b>{$hours} год {$minutes} хв</b>\n\n";
+            $text .= "🔄 Натисніть щоб оновити таймер";
+            
+            $keyboard = getTimerKeyboard($session);
+            sendMessage($chat_id, $text, $keyboard);
+            return;
+        }
+        
+        // Якщо немає активної сесії — показуємо головне меню
         showMainMenu($chat_id, $user);
     } else {
         handleStart($chat_id, $telegram_id, $username, $full_name, null);
